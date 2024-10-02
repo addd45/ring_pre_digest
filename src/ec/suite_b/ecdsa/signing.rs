@@ -281,8 +281,7 @@ impl EcdsaKeyPair {
 
         Err(error::Unspecified)
     }
-}
-
+    
 pub fn sign_pre_digest(
         &self,
         digest: &[u8],
@@ -348,6 +347,8 @@ pub fn sign_pre_digest(
             }));
         }
         Err(error::Unspecified)
+}
+    
 }
 
 /// Generates an ECDSA nonce in a way that attempts to protect against a faulty
