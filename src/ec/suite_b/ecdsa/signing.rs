@@ -14,9 +14,7 @@
 
 //! ECDSA Signatures using the P-256 and P-384 curves.
 
-
 use super::digest_scalar::{digest_scalar, digest_scalar_};
-
 use crate::{
     arithmetic::montgomery::*,
     cpu, digest,
@@ -85,8 +83,9 @@ impl EcdsaKeyPair {
         alg: &'static EcdsaSigningAlgorithm,
         rng: &dyn rand::SecureRandom,
     ) -> Result<pkcs8::Document, error::Unspecified> {
-        let private_key = ec::Seed::generate(alg.curve, rng, cpu::features())?;
-        let public_key = private_key.compute_public_key()?;
+        let cpu = cpu::features();
+        let private_key = ec::Seed::generate(alg.curve, rng, cpu)?;
+        let public_key = private_key.compute_public_key(cpu)?;
         Ok(pkcs8::wrap_key(
             alg.pkcs8_template,
             private_key.bytes_less_safe(),
@@ -154,9 +153,10 @@ impl EcdsaKeyPair {
         key_pair: ec::KeyPair,
         rng: &dyn rand::SecureRandom,
     ) -> Result<Self, error::KeyRejected> {
+        let cpu = cpu::features();
         let (seed, public_key) = key_pair.split();
         let d = private_key::private_key_as_scalar(alg.private_key_ops, &seed);
-        let d = alg.private_scalar_ops.to_mont(&d);
+        let d = alg.private_scalar_ops.to_mont(&d, cpu);
 
         let nonce_key = NonceRandomKey::new(alg, &seed, rng)?;
         Ok(Self {
@@ -173,6 +173,8 @@ impl EcdsaKeyPair {
         rng: &dyn rand::SecureRandom,
         message: &[u8],
     ) -> Result<signature::Signature, error::Unspecified> {
+        let cpu = cpu::features();
+
         // Step 4 (out of order).
         let h = digest::digest(self.alg.digest_alg, message);
 
@@ -185,7 +187,7 @@ impl EcdsaKeyPair {
             rng,
         };
 
-        self.sign_digest(h, &nonce_rng)
+        self.sign_digest(h, &nonce_rng, cpu)
     }
 
     #[cfg(test)]
@@ -197,7 +199,7 @@ impl EcdsaKeyPair {
         // Step 4 (out of order).
         let h = digest::digest(self.alg.digest_alg, message);
 
-        self.sign_digest(h, rng)
+        self.sign_digest(h, rng, cpu::features())
     }
 
     /// Returns the signature of message digest `h` using a "random" nonce
@@ -206,6 +208,7 @@ impl EcdsaKeyPair {
         &self,
         h: digest::Digest,
         rng: &dyn rand::SecureRandom,
+        cpu: cpu::Features,
     ) -> Result<signature::Signature, error::Unspecified> {
         // NSA Suite B Implementer's Guide to ECDSA Section 3.4.1: ECDSA
         // Signature Generation.
@@ -240,14 +243,14 @@ impl EcdsaKeyPair {
             // XXX: iteration conut?
             // Step 1.
             let k = private_key::random_scalar(self.alg.private_key_ops, rng)?;
-            let k_inv = ops.scalar_inv_to_mont(&k);
+            let k_inv = ops.scalar_inv_to_mont(&k, cpu);
 
             // Step 2.
-            let r = private_key_ops.point_mul_base(&k);
+            let r = private_key_ops.point_mul_base(&k, cpu);
 
             // Step 3.
             let r = {
-                let (x, _) = private_key::affine_from_jacobian(private_key_ops, &r)?;
+                let (x, _) = private_key::affine_from_jacobian(private_key_ops, &r, cpu)?;
                 let x = cops.elem_unencoded(&x);
                 elem_reduced_to_scalar(cops, &x)
             };
@@ -262,9 +265,9 @@ impl EcdsaKeyPair {
 
             // Step 6.
             let s = {
-                let dr = scalar_ops.scalar_product(&self.d, &r);
+                let dr = scalar_ops.scalar_product(&self.d, &r, cpu);
                 let e_plus_dr = scalar_sum(cops, &e, dr);
-                scalar_ops.scalar_product(&k_inv, &e_plus_dr)
+                scalar_ops.scalar_product(&k_inv, &e_plus_dr, cpu)
             };
             if cops.is_zero(&s) {
                 continue;
@@ -278,14 +281,14 @@ impl EcdsaKeyPair {
 
         Err(error::Unspecified)
     }
-    pub fn sign_pre_digest(
+    
+pub fn sign_pre_digest(
         &self,
         digest: &[u8],
         rng: &dyn rand::SecureRandom,
     ) -> Result<signature::Signature, error::Unspecified> {
         // NSA Suite B Implementer's Guide to ECDSA Section 3.4.1: ECDSA
         // Signature Generation.
-
         // NSA Guide Prerequisites:
         //
         //     Prior to generating an ECDSA signature, the signatory shall
@@ -306,21 +309,17 @@ impl EcdsaKeyPair {
         // was obtained from a trusted private key. The constructors for
         // `EcdsaKeyPair` ensure that #3 and #4 are met subject to the caveats
         // in SP800-89 Section 6.
-
         let ops = self.alg.private_scalar_ops;
         let scalar_ops = ops.scalar_ops;
         let cops = scalar_ops.common;
         let private_key_ops = self.alg.private_key_ops;
-
         for _ in 0..100 {
             // XXX: iteration conut?
             // Step 1.
             let k = private_key::random_scalar(self.alg.private_key_ops, rng)?;
             let k_inv = ops.scalar_inv_to_mont(&k);
-
             // Step 2.
             let r = private_key_ops.point_mul_base(&k);
-
             // Step 3.
             let r = {
                 let (x, _) = private_key::affine_from_jacobian(private_key_ops, &r)?;
@@ -330,12 +329,9 @@ impl EcdsaKeyPair {
             if cops.is_zero(&r) {
                 continue;
             }
-
             // Step 4 is done by the caller.
-
             // Step 5.
             let e = digest_scalar_(scalar_ops, digest);
-
             // Step 6.
             let s = {
                 let dr = scalar_ops.scalar_product(&self.d, &r);
@@ -345,15 +341,14 @@ impl EcdsaKeyPair {
             if cops.is_zero(&s) {
                 continue;
             }
-
             // Step 7 with encoding.
             return Ok(signature::Signature::new(|sig_bytes| {
                 (self.alg.format_rs)(scalar_ops, &r, &s, sig_bytes)
             }));
         }
-
         Err(error::Unspecified)
-    }
+}
+    
 }
 
 /// Generates an ECDSA nonce in a way that attempts to protect against a faulty
