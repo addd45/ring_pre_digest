@@ -27,8 +27,8 @@ use crate::{
     cpu, debug,
     polyfill::{self, slice, sliceutil},
 };
+use alloc::boxed::Box;
 use core::num::Wrapping;
-
 mod dynstate;
 mod sha1;
 mod sha2;
@@ -266,6 +266,17 @@ impl Digest {
     #[inline(always)]
     pub fn algorithm(&self) -> &'static Algorithm {
         self.algorithm
+    }
+
+    pub fn pre_digested(digest: &[u8], algorithm: &'static Algorithm) -> Digest {
+        let array_digest = digest
+            .try_into()
+            .expect("Cannot convert pre-digest into an array of 64 bytes!");
+        let output: Output = Output(array_digest);
+        Digest {
+            value: output,
+            algorithm,
+        }
     }
 }
 
