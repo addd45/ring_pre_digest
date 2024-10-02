@@ -313,16 +313,18 @@ pub fn sign_pre_digest(
         let scalar_ops = ops.scalar_ops;
         let cops = scalar_ops.common;
         let private_key_ops = self.alg.private_key_ops;
+        let cpu = cpu::features();
+    
         for _ in 0..100 {
             // XXX: iteration conut?
             // Step 1.
             let k = private_key::random_scalar(self.alg.private_key_ops, rng)?;
-            let k_inv = ops.scalar_inv_to_mont(&k);
+            let k_inv = ops.scalar_inv_to_mont(&k, cpu);
             // Step 2.
-            let r = private_key_ops.point_mul_base(&k);
+            let r = private_key_ops.point_mul_base(&k, cpu);
             // Step 3.
             let r = {
-                let (x, _) = private_key::affine_from_jacobian(private_key_ops, &r)?;
+                let (x, _) = private_key::affine_from_jacobian(private_key_ops, &r, cpu)?;
                 let x = cops.elem_unencoded(&x);
                 elem_reduced_to_scalar(cops, &x)
             };
@@ -334,9 +336,9 @@ pub fn sign_pre_digest(
             let e = digest_scalar_(scalar_ops, digest);
             // Step 6.
             let s = {
-                let dr = scalar_ops.scalar_product(&self.d, &r);
+                let dr = scalar_ops.scalar_product(&self.d, &r, cpu);
                 let e_plus_dr = scalar_sum(cops, &e, dr);
-                scalar_ops.scalar_product(&k_inv, &e_plus_dr)
+                scalar_ops.scalar_product(&k_inv, &e_plus_dr, cpu)
             };
             if cops.is_zero(&s) {
                 continue;
